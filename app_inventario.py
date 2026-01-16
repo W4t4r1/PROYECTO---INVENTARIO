@@ -6,199 +6,220 @@ import os
 import io
 from openpyxl.drawing.image import Image as ExcelImage
 
-# --- 1. CONFIGURACIÓN DE PÁGINA (SIEMPRE VA PRIMERO) ---
-st.set_page_config(page_title="Inventario Seguro", layout="wide", page_icon="🔐")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Inventario ZAP Celima", layout="wide", page_icon="🏗️")
 
-# --- 2. SISTEMA DE LOGIN (SEGURIDAD) ---
+# --- SEGURIDAD ---
 def check_password():
-    """Retorna True si el usuario ingresó la contraseña correcta."""
-    
-    # Si ya validó antes en esta sesión, pase directo
     if st.session_state.get('password_correct', False):
         return True
-
-    # Interfaz de Login
-    st.header("🔒 Acceso Restringido")
-    st.caption("Sistema de Gestión de Inventarios - Solo personal autorizado")
     
-    password_input = st.text_input("Ingresa la contraseña maestra:", type="password")
+    st.header("🔒 Acceso Distribuidora")
+    password_input = st.text_input("Contraseña:", type="password")
     
-    if st.button("Ingresar al Sistema"):
+    if st.button("Ingresar"):
         try:
-            # Buscamos la clave en los secretos
-            secreto = st.secrets["general"]["password"]
-            if password_input == secreto:
+            if password_input == st.secrets["general"]["password"]:
                 st.session_state['password_correct'] = True
-                st.success("✅ Acceso concedido")
-                st.rerun() # Recargamos la página para quitar el login
+                st.rerun()
             else:
-                st.error("❌ Contraseña incorrecta")
-        except KeyError:
-            st.error("⚠️ Error de configuración: No se encontró la clave '[general] password' en secrets.toml")
-
+                st.error("Contraseña incorrecta")
+        except:
+            st.error("Falta configurar secrets.toml")
     return False
 
-# --- 3. CONEXIÓN A GOOGLE SHEETS (BACKEND) ---
+# --- CONEXIÓN ---
 def conectar_google_sheets():
-    if not os.path.exists("imagenes"):
-        os.makedirs("imagenes")
-
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
+    if not os.path.exists("imagenes"): os.makedirs("imagenes")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(credentials)
-        sheet = client.open("inventario_db").sheet1
-        return sheet
+        creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+        client = gspread.authorize(creds)
+        return client.open("inventario_db").sheet1
     except Exception as e:
-        st.error(f"Error crítico de conexión: {e}")
+        st.error(f"Error de conexión: {e}")
         return None
 
 def obtener_datos():
     hoja = conectar_google_sheets()
     if hoja:
-        datos = hoja.get_all_records()
-        df = pd.DataFrame(datos)
+        # Usamos get_all_values en lugar de get_all_records
+        # Esto evita el error de "headers duplicados" o celdas vacías
+        datos = hoja.get_all_values()
+        
+        if not datos:
+            return pd.DataFrame(), hoja
+            
+        # La primera fila son los encabezados
+        headers = datos.pop(0) 
+        
+        # Creamos el DataFrame manualmente
+        df = pd.DataFrame(datos, columns=headers)
         return df, hoja
+        
     return pd.DataFrame(), None
 
-def generar_nuevo_id(df):
-    if df.empty or 'id' not in df.columns:
-        return 1
-    # Limpiamos IDs para asegurar que sean números
-    ids = pd.to_numeric(df['id'], errors='coerce').fillna(0)
-    return int(ids.max()) + 1
-
-# --- 4. INTERFAZ PRINCIPAL (SOLO CARGA SI HAY LOGIN) ---
+# --- FRONTEND ---
 def main():
-    # 🛑 CANDADO: Si no pasa el login, el código se detiene aquí.
-    if not check_password():
-        st.stop()
+    if not check_password(): st.stop()
 
-    # --- A PARTIR DE AQUÍ ES TU APP DE SIEMPRE ---
-    st.title("☁️ Sistema de Control: Google Sheets Edition")
-    st.sidebar.success(f"Sesión iniciada correctamente.")
-
+    st.title("🏭 Gestión ZAP: Celima & Trebol")
+    
     menu = ["Ver Inventario", "Registrar Nuevo", "Actualizar Stock"]
-    choice = st.sidebar.selectbox("Menú Principal", menu)
-
-    # Cargamos datos (Conexión a Nube)
+    choice = st.sidebar.selectbox("Menú", menu)
     df, hoja = obtener_datos()
 
-    # --- OPCIÓN A: VER INVENTARIO ---
+    # --- 1. VER INVENTARIO ---
     if choice == "Ver Inventario":
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.subheader("📦 Inventario en Vivo")
-        with col2:
-            if st.button("🔄 Forzar Recarga"):
-                st.rerun()
+        col1, col2 = st.columns([3,1])
+        with col1: st.subheader("📦 Stock Valorizado")
+        with col2: 
+            if st.button("🔄 Recargar"): st.rerun()
 
-        busqueda = st.text_input("🔍 Buscar producto (Nombre o Categoría):")
+        busqueda = st.text_input("🔍 Buscar (Código ZAP, Nombre, Calidad...):")
         
         if not df.empty:
-            # Filtros
             if busqueda:
                 mask = df.apply(lambda row: row.astype(str).str.contains(busqueda, case=False).any(), axis=1)
                 df_filtered = df[mask]
             else:
                 df_filtered = df
 
-            # Limpieza de datos numéricos para cálculos
+            # Limpieza y KPIs
             df_filtered['stock'] = pd.to_numeric(df_filtered['stock'], errors='coerce').fillna(0).astype(int)
             df_filtered['precio'] = pd.to_numeric(df_filtered['precio'], errors='coerce').fillna(0.0)
 
-            # KPIs
-            col_kpi1, col_kpi2, col_descarga = st.columns(3)
-            col_kpi1.metric("Total Unidades", df_filtered['stock'].sum())
-            col_kpi2.metric("Valor Total", f"S/. {(df_filtered['stock'] * df_filtered['precio']).sum():,.2f}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("SKUs Totales", len(df_filtered))
+            c2.metric("Unidades Físicas", df_filtered['stock'].sum())
+            c3.metric("Valor en Soles", f"S/. {(df_filtered['stock'] * df_filtered['precio']).sum():,.2f}")
 
-            # Excel Download
+            # Exportar Excel
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_filtered.to_excel(writer, index=False, sheet_name='Inventario')
-                worksheet = writer.sheets['Inventario']
-                for idx, col in enumerate(df_filtered.columns):
-                    worksheet.column_dimensions[chr(65 + idx)].width = 15
+                df_filtered.to_excel(writer, index=False, sheet_name='Stock')
             
-            buffer.seek(0)
-            with col_descarga:
-                st.download_button(label="📥 Descargar Excel", data=buffer, file_name='reporte_nube.xlsx')
-
-            # Tabla
-            st.dataframe(df_filtered, use_container_width=True)
+            st.download_button("📥 Descargar Excel", data=buffer.getvalue(), file_name='stock_zap.xlsx')
+            
+            # Tabla Principal
+            # Aseguramos que se muestren las columnas clave
+            columnas_visibles = ['id', 'marca', 'nombre', 'calidad', 'formato', 'stock', 'precio']
+            # Filtramos solo las columnas que existan en el DF para evitar errores si Google Sheets no está actualizado
+            cols_finales = [c for c in columnas_visibles if c in df_filtered.columns]
+            
+            st.dataframe(df_filtered[cols_finales], use_container_width=True)
         else:
-            st.warning("No se pudieron cargar los datos. Revisa la conexión.")
+            st.warning("No hay datos. Registra productos.")
 
-    # --- OPCIÓN B: REGISTRAR ---
+    # --- 2. REGISTRAR (Con ZAP y Calidad) ---
     elif choice == "Registrar Nuevo":
-        st.subheader("📝 Nuevo Producto")
+        st.subheader("📝 Nuevo Ingreso (Código ZAP)")
         
-        with st.form("entry_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            nombre = col1.text_input("Nombre")
-            categoria = col2.selectbox("Categoría", ["Mayólica", "Sanitario", "Grifería", "Pegamento", "Otros"])
+        with st.form("form_registro", clear_on_submit=True):
+            # Fila 1: Lo más importante
+            c1, c2 = st.columns(2)
+            id_zap = c1.text_input("Código ZAP (Ej. 110016549)", help="Código numérico único del sistema SAP/Celima")
+            marca = c2.selectbox("Marca", ["Celima", "Trebol", "Generico", "Otro"])
             
-            col3, col4, col5 = st.columns(3)
-            formato = col3.text_input("Formato")
-            stock = col4.number_input("Stock", min_value=0)
-            precio = col5.number_input("Precio", min_value=0.0)
+            # Fila 2: Definición del producto
+            c3, c4 = st.columns(2)
+            nombre = c3.text_input("Descripción (Ej. Cayalti Gris)")
+            categoria = c4.selectbox("Categoría", ["Mayólica", "Sanitario", "Grifería", "Pegamento", "Fragua", "Otros"])
             
-            imagen_archivo = st.file_uploader("Subir Foto (Opcional)", type=['jpg', 'png'])
+            # Fila 3: Detalles Técnicos
+            c5, c6 = st.columns(2)
+            # Formatos
+            formatos = ["27x45", "30x30", "45x45", "60x60", "30x60", "59x59", "Otro"]
+            formato_sel = c5.selectbox("Formato / Medida", formatos)
+            if formato_sel == "Otro": formato_sel = st.text_input("Formato Manual:")
+            
+            # Calidades (Lógica condicional visual)
+            calidades = ["Comercial", "Extra", "Única", "Estándar (No aplica)"]
+            calidad = c6.selectbox("Calidad / Tipo", calidades, index=0)
+            
+            # Fila 4: Comercial
+            c7, c8 = st.columns(2)
+            stock = c7.number_input("Stock Inicial", min_value=0, step=1)
+            precio = c8.number_input("Precio Unitario", min_value=0.0)
+            
+            foto = st.file_uploader("Foto referencial", type=['jpg','png'])
             
             if st.form_submit_button("Guardar en Nube"):
                 if nombre and hoja:
-                    # Manejo temporal de imagen
-                    ruta_final = ""
-                    if imagen_archivo:
-                        ruta_final = os.path.join("imagenes", imagen_archivo.name)
-                        with open(ruta_final, "wb") as f:
-                            f.write(imagen_archivo.getbuffer())
+                    ruta_img = ""
+                    if foto:
+                        ruta_img = os.path.join("imagenes", foto.name)
+                        with open(ruta_img, "wb") as f: f.write(foto.getbuffer())
 
-                    nuevo_id = generar_nuevo_id(df)
-                    nueva_fila = [nuevo_id, nombre, categoria, formato, stock, precio, ruta_final]
+                    # ID Logic
+                    final_id = id_zap.strip()
+                    if not final_id:
+                        # Si es un "hueso" sin código ZAP, generamos uno interno
+                        import random
+                        final_id = f"INT-{random.randint(10000, 99999)}"
+                    
+                    # Validación de duplicados
+                    if str(final_id) in df['id'].astype(str).values:
+                        st.error(f"⚠️ El código ZAP {final_id} ya existe en el inventario.")
+                        st.stop()
+                    
+                    # Armamos la fila respetando el orden de Google Sheets
+                    # id, nombre, categoria, marca, formato, CALIDAD, stock, precio, imagen
+                    fila = [
+                        str(final_id), 
+                        nombre, 
+                        categoria, 
+                        marca, 
+                        formato_sel, 
+                        calidad, # <--- Nueva columna
+                        stock, 
+                        precio, 
+                        ruta_img
+                    ]
                     
                     try:
-                        hoja.append_row(nueva_fila)
-                        st.success(f"✅ Guardado correctamente. ID: {nuevo_id}")
+                        hoja.append_row(fila)
+                        st.success(f"✅ Registrado: {nombre} ({calidad}) - ZAP: {final_id}")
                     except Exception as e:
-                        st.error(f"Error escribiendo en Google: {e}")
+                        st.error(f"Error guardando: {e}")
                 else:
-                    st.error("El nombre es obligatorio")
+                    st.error("Nombre obligatorio.")
 
-    # --- OPCIÓN C: ACTUALIZAR STOCK ---
+    # --- 3. ACTUALIZAR STOCK ---
     elif choice == "Actualizar Stock":
-        st.subheader("🔄 Modificar Stock")
-        
+        st.subheader("🔄 Entrada/Salida Rápida")
         if not df.empty:
-            producto_selec = st.selectbox("Buscar Producto:", df['id'].astype(str) + " - " + df['nombre'])
-            id_sel = int(producto_selec.split(" - ")[0])
+            # Buscador incluye Calidad y ZAP
+            def etiqueta(x):
+                return f"{x['id']} | {x['nombre']} ({x['calidad']}) - {x['formato']}"
             
-            # Encontrar fila en Google Sheets (Index Pandas + 2 por header)
-            index_pandas = df[df['id'] == id_sel].index[0]
-            fila_hoja = index_pandas + 2 
+            opciones = df.apply(etiqueta, axis=1)
+            seleccion = st.selectbox("Buscar SKU:", opciones)
             
-            stock_actual = df.loc[index_pandas, 'stock']
-            st.info(f"Stock en Nube: {stock_actual}")
+            id_sel = seleccion.split(" | ")[0]
             
-            cantidad = st.number_input("Sumar / Restar:", step=1)
+            # Localizar fila
+            idx = df.index[df['id'].astype(str) == id_sel].tolist()[0]
+            fila_sheet = idx + 2
             
-            if st.button("Actualizar"):
-                nuevo_stock = int(stock_actual + cantidad)
-                if nuevo_stock < 0:
-                    st.error("No hay stock suficiente")
-                else:
-                    try:
-                        # Columna 5 es stock (según orden: id, nombre, categoria, formato, stock...)
-                        hoja.update_cell(fila_hoja, 5, nuevo_stock)
-                        st.success("✅ Stock actualizado en la nube")
+            # Datos actuales
+            item = df.iloc[idx]
+            c1, c2 = st.columns([1,3])
+            with c1:
+                st.info(f"Stock: {item['stock']}")
+                st.caption(f"Calidad: {item['calidad']}")
+            
+            with c2:
+                cambio = st.number_input("Ajuste (+/-):", step=1)
+                if st.button("Confirmar Ajuste"):
+                    nuevo = int(item['stock'] + cambio)
+                    if nuevo < 0:
+                        st.error("No hay suficiente stock")
+                    else:
+                        # Columna 7 es Stock ahora (A=1, B=2, C=3, D=4, E=5, F=6(Calidad), G=7(Stock))
+                        hoja.update_cell(fila_sheet, 7, nuevo)
+                        st.success("✅ Stock actualizado")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Error de conexión: {e}")
 
 if __name__ == "__main__":
     main()
