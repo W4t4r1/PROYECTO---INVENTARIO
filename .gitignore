@@ -1,0 +1,9 @@
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Opcional: Si no quieres subir tu base de datos local (con datos reales)
